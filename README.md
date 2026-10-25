@@ -216,8 +216,13 @@ add_filter( 'cdnhub_provider', function( $provider, $settings ) {
 
 ---
 
-## 📄 License
+## 📄 License & Terms of Use
 
-This project is open-source software licensed under the **GNU General Public License v2.0 or later** (GPL-2.0-or-later). See [LICENSE](LICENSE) for details.
+This project is open-source software licensed under the **GNU General Public License v2.0 or later (GPL-2.0-or-later)** with mandatory author attribution terms. See the full [LICENSE](LICENSE) for details.
+
+### Summary of Terms:
+- ✅ **Free to Use**: Anyone is free to install, run, and use this plugin on personal and commercial sites.
+- ✅ **Free to Improve & Modify**: Anyone can fork, customize, extend, and submit improvements to the plugin.
+- ⚠️ **Author Attribution Cannot Be Changed**: Original author attribution (`bdSpark`) and repository links **must remain intact** in all copies, forks, modifications, and derivative works. You may not remove, alter, or replace the original author credit or claim original authorship.
 
 Developed with ❤️ by [bdSpark](https://github.com/19littleghost)

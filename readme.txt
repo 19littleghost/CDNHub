@@ -29,6 +29,9 @@ Free up web host storage, decrease server inode usage, reduce hosting bandwidth 
 * **Bank-Grade Security**: GitHub access tokens are encrypted at rest with AES-256-CBC and scrubbed from logs. Also supports `CDNHUB_GITHUB_TOKEN` in `wp-config.php`.
 * **Developer Extensible**: Pluggable provider interface (`CDNHub_Provider`) and `cdnhub_provider` filter.
 
+= Open Source & Author Attribution =
+This plugin is open-source software under GPLv2 or later. Anyone is free to use, run, and improve the plugin. However, original Author attribution to bdSpark must be preserved in all copies, forks, and derivative works; original authorship credit cannot be removed or altered.
+
 == Installation ==
 
 1. Upload the `cdnhub` directory to your `/wp-content/plugins/` directory, or install the plugin ZIP file via **Plugins > Add New > Upload Plugin**.
