@@ -67,9 +67,15 @@ final class CDNHub_Rewriter {
 			if ( empty( $source['url'] ) ) {
 				continue;
 			}
-			$name = wp_basename( strtok( $source['url'], '?' ) );
+			$url  = (string) $source['url'];
+			$path = strtok( $url, '?#' );
+			if ( false === $path ) {
+				continue;
+			}
+			$name = wp_basename( $path );
 			if ( CDNHub_Store::has_file( $id, $name ) ) {
-				$sources[ $k ]['url'] = $this->urls->for_file( $dir, $name );
+				$suffix               = substr( $url, strlen( $path ) ); // Keep ?query / #fragment.
+				$sources[ $k ]['url'] = $this->urls->for_file( $dir, $name ) . $suffix;
 			}
 		}
 		return $sources;
@@ -116,16 +122,19 @@ final class CDNHub_Rewriter {
 		if ( false === strpos( $content, $base ) ) {
 			return $content;
 		}
-		$pattern = '~(?:https?:)?' . preg_quote( $base, '~' ) . '/([^\s"\'<>(),\\\\?]+?\.(?:jpe?g|png|gif|webp|avif|svg))(?=[\s"\'<>(),?\\\\#]|$)~i';
+		// The query string / fragment is captured separately and put back after the CDN
+		// URL, so cache busters (?ver=…) and links to a fragment survive the rewrite.
+		$pattern = '~(?:https?:)?' . preg_quote( $base, '~' ) . '/([^\s"\'<>(),\\\\?#]+?\.(?:jpe?g|png|gif|webp|avif|svg))([?#][^\s"\'<>(),\\\\]*)?(?=[\s"\'<>(),\\\\?#]|$)~i';
 
 		return preg_replace_callback(
 			$pattern,
 			function ( $m ) {
-				$hit = $this->lookup( rawurldecode( $m[1] ) );
+				$rel = rawurldecode( $m[1] );
+				$hit = $this->lookup( $rel );
 				if ( null === $hit ) {
 					return $m[0];
 				}
-				return $this->urls->for_file( $hit['dir'], wp_basename( rawurldecode( $m[1] ) ) );
+				return $this->urls->for_file( $hit['dir'], wp_basename( $rel ) ) . ( isset( $m[2] ) ? $m[2] : '' );
 			},
 			$content
 		);

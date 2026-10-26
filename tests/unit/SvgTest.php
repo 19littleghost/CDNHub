@@ -20,6 +20,7 @@ class SvgTest extends CDNHub_Test_Case {
 			'linked image'    => array( self::svg( '<image href="https://example.com/a.png"/>' ) ),
 			'editor metadata' => array( '<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" inkscape:version="1.3"><g inkscape:label="Layer 1"/></svg>' ),
 			'style element'   => array( self::svg( '<style>.a{fill:red}</style><rect class="a"/>' ) ),
+			'animate fill'    => array( self::svg( '<rect><animate attributeName="fill" values="red;blue" dur="1s"/></rect>' ) ),
 		);
 	}
 
@@ -43,7 +44,13 @@ class SvgTest extends CDNHub_Test_Case {
 			'html data url'          => array( self::svg( '<a href="data:text/html,&lt;script&gt;"><rect/></a>' ) ),
 			'other scheme in href'   => array( self::svg( '<use href="file:///etc/passwd#x"/>' ) ),
 			'css import'             => array( self::svg( '<style>@import url(https://evil.example/x.css);</style>' ) ),
+			'css escaped import'     => array( self::svg( '<style>@\69 mport url(https://evil.example/x.css);</style>' ) ),
 			'css script url'         => array( self::svg( '<rect style="fill:url(javascript:alert(1))"/>' ) ),
+			'css escaped script url' => array( self::svg( '<rect style="fill:url(\6a avascript:alert(1))"/>' ) ),
+			'escaped fill url'       => array( self::svg( '<rect fill="url(\6a avascript:alert(1))"/>' ) ),
+			'css comment in url'     => array( self::svg( '<rect style="fill:url(java/**/script:alert(1))"/>' ) ),
+			'animated event handler' => array( self::svg( '<rect><set attributeName="onload" to="alert(1)"/></rect>' ) ),
+			'xml base'               => array( self::svg( '<rect/>', ' xml:base="https://evil.example/"' ) ),
 			'entity declaration'     => array( '<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg"><text>&x;</text></svg>' ),
 			'xml stylesheet'         => array( '<?xml version="1.0"?><?xml-stylesheet href="https://evil.example/x.xsl"?><svg xmlns="http://www.w3.org/2000/svg"/>' ),
 			'not an svg'             => array( '<html><body>hi</body></html>' ),

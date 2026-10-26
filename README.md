@@ -2,7 +2,7 @@
 
 [![WordPress](https://img.shields.io/badge/WordPress-5.8%2B-blue.svg?logo=wordpress)](https://wordpress.org)
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-8892BF.svg?logo=php)](https://php.net)
-[![Version](https://img.shields.io/badge/Version-26.2.1-success.svg)](https://github.com/19littleghost/CDNHub/releases)
+[![Version](https://img.shields.io/badge/Version-26.2.2-success.svg)](https://github.com/19littleghost/CDNHub/releases)
 [![License](https://img.shields.io/badge/License-GPLv2%20or%20later-orange.svg)](LICENSE)
 
 > **Effortlessly offload WordPress images to GitHub and serve them blazing fast via free global CDNs (jsDelivr, GitHub Raw, GitHub Pages, or your own custom domain).**
@@ -187,13 +187,13 @@ Need your site logo, invoices, or private downloads to be hosted strictly on you
 
 ## 🔐 Security & Privacy
 
-- **Encrypted Credentials**: Tokens entered via the admin UI are encrypted at rest using AES-256-GCM, with a key derived from your WordPress `AUTH` salt. **If you change the salts in `wp-config.php`, the saved token can no longer be decrypted** — CDNHub pauses uploads and shows a notice asking you to enter the token again. Defining the token as a constant (below) avoids this.
+- **Encrypted Credentials**: Tokens entered via the admin UI are encrypted at rest using AES-256-GCM, with a key derived from your WordPress `AUTH` salt. The plugin **never stores a token in plain text**: if the server lacks OpenSSL/AES-256-GCM, the token is not saved, a settings error explains why, and uploads stay paused. **If you change the salts in `wp-config.php`, the saved token can no longer be decrypted** — CDNHub pauses uploads and shows a notice asking you to enter the token again. Defining the token as a constant (below) avoids this.
 - **Log Scrubbing**: All API tokens and credentials are automatically redacted and masked in activity logs.
 - **wp-config.php Support**: For maximum security, define your token in `wp-config.php` so it is never saved to the database:
   ```php
   define( 'CDNHUB_GITHUB_TOKEN', 'github_pat_11A...your_token_here...' );
   ```
-- **SVG Protection**: SVGs are parsed as XML and **rejected** (kept on your server, never modified) when they contain scripts, event handlers (`onload=` …), `<foreignObject>`/`<iframe>`/embedded documents, `javascript:` or HTML/SVG `data:` URLs (also when entity-encoded), CSS `@import`, a DOCTYPE/entities, or links other than `#fragments`, `http(s)` and inlined raster images. SVGs over 5 MB are not checked and stay local. Requires the PHP `dom` extension; without it, no SVG is uploaded.
+- **SVG Protection**: SVGs are parsed as XML and **rejected** (kept on your server, never modified) when they contain scripts, event handlers (`onload=` …), `<foreignObject>`/`<iframe>`/embedded documents, `javascript:` or HTML/SVG `data:` URLs (also when entity-encoded or hidden with CSS escapes), CSS `@import`, animation targets that set event handlers or unsafe links, `xml:base`, a DOCTYPE/entities, or links other than `#fragments`, `http(s)` and inlined raster images. SVGs over 5 MB are not checked and stay local. Requires the PHP `dom` extension; without it, no SVG is uploaded.
 - **Upload Toggle Protection**: The per-upload "Upload to GitHub" choice is only honoured when it comes with a valid WordPress nonce from a user who can upload files.
 
 ---
@@ -246,7 +246,7 @@ composer build       # cdnhub.zip with a production autoloader (removes dev depe
 
 - **WordPress**: 5.8 or higher (tested up to 6.8)
 - **PHP**: 7.4 or higher (supports PHP 8.0, 8.1, 8.2, 8.3+)
-- **PHP Extensions**: `curl`, `json`, `openssl` (token encryption), `dom` (SVG checks)
+- **PHP Extensions**: `curl`, `json`, `openssl` (required to encrypt/save the token in the database), `dom` (SVG checks)
 - **PHP Memory**: about 4.5× your largest upload, plus WordPress itself
 - **GitHub Account & Repository**: Public repository for jsDelivr CDN delivery
 
@@ -261,4 +261,4 @@ This project is open-source software licensed under the **GNU General Public Lic
 - ✅ **Free to Improve & Modify**: Anyone can fork, customize, extend, and submit improvements to the plugin.
 - ⚠️ **Author Attribution Cannot Be Changed**: Original author attribution (`bdSpark`) and repository links **must remain intact** in all copies, forks, modifications, and derivative works. You may not remove, alter, or replace the original author credit or claim original authorship.
 
-Developed with ❤️ by [bdSpark](https://github.com/19littleghost)
+Developed with ❤️ by [bdSpark](https://bdspark.com) — [GitHub](https://github.com/19littleghost)

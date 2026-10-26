@@ -4,7 +4,7 @@ Tags: cdn, github, media, images, jsdelivr, performance, offload
 Requires at least: 5.8
 Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 26.2.1
+Stable tag: 26.2.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -28,12 +28,12 @@ Free up web host storage, decrease server inode usage, reduce hosting bandwidth 
 * **Media Library Integration**: Custom status column, one-click sync/re-sync buttons, and bulk upload actions.
 * **One Commit per Image**: The original and all its sizes are committed together, keeping the repository history clean.
 * **Fresh CDN Copies**: Overwritten or deleted files are purged from the jsDelivr cache automatically.
-* **Encrypted Token**: GitHub access tokens are encrypted at rest with AES-256-GCM and scrubbed from logs. Also supports `CDNHUB_GITHUB_TOKEN` in `wp-config.php`.
-* **SVG Checks**: SVG files containing scripts, event handlers or other unsafe code are rejected and stay on your server.
+* **Encrypted Token**: GitHub access tokens are encrypted at rest with AES-256-GCM and scrubbed from logs. The plugin never stores a token in plain text: if the server lacks OpenSSL, the token is not saved and an admin notice explains why. Also supports `CDNHUB_GITHUB_TOKEN` in `wp-config.php`.
+* **SVG Checks**: SVG files containing scripts, event handlers, CSS escapes, unsafe animation targets or other unsafe code are rejected and stay on your server.
 * **Developer Extensible**: Pluggable provider interface (`CDNHub_Provider`) and `cdnhub_provider` filter.
 
 = Open Source & Author Attribution =
-This plugin is open-source software under GPLv2 or later. Anyone is free to use, run, and improve the plugin. However, original Author attribution to bdSpark must be preserved in all copies, forks, and derivative works; original authorship credit cannot be removed or altered.
+This plugin is open-source software under GPLv2 or later. Anyone is free to use, run, and improve the plugin. However, original Author attribution to bdSpark (https://bdspark.com) must be preserved in all copies, forks, and derivative works; original authorship credit cannot be removed or altered.
 
 == Installation ==
 
@@ -68,7 +68,7 @@ The saved token is encrypted with a key derived from your WordPress security sal
 
 == Changelog ==
 
-= Unreleased =
+= 26.2.2 =
 * Each image (all sizes) is now uploaded as a single commit via the Git Data API; deletions are batched too.
 * jsDelivr cache is purged when a file is overwritten or deleted (`cdnhub_purge_urls` filter for other CDNs).
 * Uploads that would exceed the PHP memory limit are refused up front instead of crashing, and are not retried.
@@ -79,6 +79,11 @@ The saved token is encrypted with a key derived from your WordPress security sal
 * Fixed: the local-copy cleanup tool lost its total count on the first batch.
 * Composer support: autoloading, PHPUnit tests, and WordPress coding standards.
 * Corrected the documented encryption algorithm (AES-256-GCM).
+* Security: a token is never stored in plain text when OpenSSL is unavailable (the save is refused with an error); owner, repository and branch names are validated.
+* Security: SVG files are also checked for CSS escape tricks, commented-out URLs, unsafe `<animate>`/`<set>` targets and `xml:base`.
+* Replacing a file with the same name is now detected by its content hash, and adoption handles the same content stored in several folders.
+* CDN rewriting keeps `?query` strings and `#fragments`; bulk-tool counters no longer include excluded images.
+* Uninstall also removes per-user flash messages and cleans every site in a multisite network.
 
 = 26.2.1 =
 * Initial public release with full GitHub integration.
@@ -88,6 +93,9 @@ The saved token is encrypted with a key derived from your WordPress security sal
 * Added automated WP-Cron retries and AES-256-GCM token encryption.
 
 == Upgrade Notice ==
+
+= 26.2.2 =
+Security and reliability fixes, plus the author website link (https://bdspark.com). Update recommended.
 
 = 26.2.1 =
 Initial release.

@@ -127,7 +127,14 @@ final class CDNHub_Admin {
 		}
 
 		$screen = get_current_screen();
-		if ( ! $screen || ! in_array( $screen->base, array( 'upload', 'post', 'tools_page_cdnhub' ), true ) || ! $this->settings->get( 'enabled' ) ) {
+		if ( ! $screen || ! in_array( $screen->base, array( 'upload', 'post', 'tools_page_cdnhub' ), true ) ) {
+			return;
+		}
+		if ( current_user_can( 'manage_options' ) && ! $this->settings->token_from_constant() && ! $this->settings->encryption_available() ) {
+			echo '<div class="notice notice-error"><p><strong>CDNHub:</strong> this server cannot encrypt the GitHub token (PHP OpenSSL with AES-256-GCM is missing), so the token will not be saved in plain text. Enable the OpenSSL extension, or define <code>CDNHUB_GITHUB_TOKEN</code> in <code>wp-config.php</code>.</p></div>';
+			return;
+		}
+		if ( ! $this->settings->get( 'enabled' ) ) {
 			return;
 		}
 		if ( current_user_can( 'manage_options' ) && $this->settings->token_unreadable() ) {
@@ -355,15 +362,18 @@ final class CDNHub_Admin {
 
 	public function ajax_test() {
 		$this->guard_ajax();
-		$token = isset( $_POST['token'] ) ? preg_replace( '/\s+/', '', wp_unslash( $_POST['token'] ) ) : ''; // phpcs:ignore
+		$token = isset( $_POST['token'] ) && is_string( $_POST['token'] ) ? preg_replace( '/\s+/', '', wp_unslash( $_POST['token'] ) ) : ''; // phpcs:ignore
 		if ( '' === $token ) {
 			$token = (string) $this->settings->get( 'token' );
 		}
-		$owner  = preg_replace( '/[^A-Za-z0-9._-]/', '', isset( $_POST['owner'] ) ? wp_unslash( $_POST['owner'] ) : '' ); // phpcs:ignore
-		$repo   = preg_replace( '/[^A-Za-z0-9._-]/', '', isset( $_POST['repo'] ) ? wp_unslash( $_POST['repo'] ) : '' ); // phpcs:ignore
-		$branch = preg_replace( '/[^A-Za-z0-9._\/-]/', '', isset( $_POST['branch'] ) ? wp_unslash( $_POST['branch'] ) : '' ); // phpcs:ignore
+		$owner  = isset( $_POST['owner'] ) && is_string( $_POST['owner'] ) ? preg_replace( '/[^A-Za-z0-9-]/', '', wp_unslash( $_POST['owner'] ) ) : ''; // phpcs:ignore
+		$repo   = isset( $_POST['repo'] ) && is_string( $_POST['repo'] ) ? preg_replace( '/[^A-Za-z0-9._-]/', '', wp_unslash( $_POST['repo'] ) ) : ''; // phpcs:ignore
+		$branch = isset( $_POST['branch'] ) && is_string( $_POST['branch'] ) ? preg_replace( '/[^A-Za-z0-9._\/-]/', '', wp_unslash( $_POST['branch'] ) ) : ''; // phpcs:ignore
 
-		$provider = new CDNHub_GitHub( $token, $owner, $repo, '' !== $branch ? $branch : 'main' );
+		$provider = $this->uploader->provider_from( new CDNHub_GitHub( $token, $owner, $repo, '' !== $branch ? $branch : 'main' ) );
+		if ( ! $provider ) {
+			wp_send_json_error( array( 'message' => 'The cdnhub_provider filter did not return a valid storage provider.' ) );
+		}
 		if ( ! $provider->is_configured() ) {
 			wp_send_json_error( array( 'message' => 'Please fill in the token, owner, repository and branch first.' ) );
 		}
@@ -373,8 +383,8 @@ final class CDNHub_Admin {
 			wp_send_json_error( array( 'message' => $r->get_error_message() ) );
 		}
 		update_option( 'cdnhub_last_test', array( 'ok' => true, 'time' => time() ), false );
-		$msg = $r['message'];
-		if ( $r['private'] ) {
+		$msg = isset( $r['message'] ) ? (string) $r['message'] : 'Connected.';
+		if ( ! empty( $r['private'] ) ) {
 			$msg .= ' Note: the repository is private, so jsDelivr / raw links will not be publicly reachable. Make it public.';
 		}
 		wp_send_json_success( array( 'message' => $msg ) );

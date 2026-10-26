@@ -2,8 +2,9 @@
 /**
  * Plugin Name: CDNHub
  * Description: Automatically uploads your blog images to GitHub and serves them from a CDN (jsDelivr, GitHub raw, GitHub Pages or your own domain). Upload images the normal way — CDNHub does the rest.
- * Version:     26.2.1
+ * Version:     26.2.2
  * Author:      bdSpark
+ * Author URI:  https://bdspark.com
  * Requires at least: 5.8
  * Requires PHP: 7.4
  * License:     GPL-2.0-or-later
@@ -14,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'CDNHUB_VERSION', '26.2.1' );
+define( 'CDNHUB_VERSION', '26.2.2' );
 define( 'CDNHUB_FILE', __FILE__ );
 define( 'CDNHUB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CDNHUB_URL', plugin_dir_url( __FILE__ ) );

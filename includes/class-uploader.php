@@ -36,9 +36,24 @@ final class CDNHub_Uploader {
 	/* --------------------------------------------------------------- provider */
 
 	public function provider() {
-		$s        = $this->settings;
-		$provider = new CDNHub_GitHub( $s->get( 'token' ), $s->get( 'owner' ), $s->get( 'repo' ), $s->get( 'branch' ) );
-		return apply_filters( 'cdnhub_provider', $provider, $s );
+		$s = $this->settings;
+		return $this->provider_from( new CDNHub_GitHub( $s->get( 'token' ), $s->get( 'owner' ), $s->get( 'repo' ), $s->get( 'branch' ) ) );
+	}
+
+	/**
+	 * Let `cdnhub_provider` replace the default provider, but never hand callers an
+	 * object that cannot do the job. A faulty filter must not cause a fatal error.
+	 *
+	 * @param CDNHub_Provider $default Default GitHub provider (or a test instance).
+	 * @return CDNHub_Provider|null Null when the filter returned something invalid.
+	 */
+	public function provider_from( CDNHub_Provider $default ) {
+		$provider = apply_filters( 'cdnhub_provider', $default, $this->settings );
+		if ( ! $provider instanceof CDNHub_Provider ) {
+			$this->logger->error( 'The cdnhub_provider filter did not return a CDNHub_Provider instance.' );
+			return null;
+		}
+		return $provider;
 	}
 
 	/* ------------------------------------------------------------------ types */
@@ -101,11 +116,25 @@ final class CDNHub_Uploader {
 		return $this->settings->clean_path( strtr( $pattern, $tokens ) );
 	}
 
+	/** A relative path inside the uploads folder: no absolute path, no "." / ".." segments. */
+	private function safe_rel( $rel ) {
+		$rel = str_replace( '\\', '/', (string) $rel );
+		if ( '' === $rel || '/' === $rel[0] || false !== strpos( $rel, "\0" ) || preg_match( '~^[A-Za-z]:~', $rel ) ) {
+			return false;
+		}
+		foreach ( explode( '/', $rel ) as $seg ) {
+			if ( '' === $seg || '.' === $seg || '..' === $seg ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	/** Local relative paths of every file to store for this attachment. */
 	private function collect_files( $id, $meta ) {
 		$rel = ( is_array( $meta ) && ! empty( $meta['file'] ) ) ? (string) $meta['file'] : (string) get_post_meta( $id, '_wp_attached_file', true );
-		if ( '' === $rel ) {
-			return array();
+		if ( '' === $rel || ! $this->safe_rel( $rel ) ) {
+			return array(); // Missing or unsafe metadata: never read outside the uploads folder.
 		}
 		$d   = dirname( $rel );
 		$dir = ( '.' === $d || '' === $d ) ? '' : $d . '/';
@@ -137,6 +166,12 @@ final class CDNHub_Uploader {
 				}
 			}
 		}
+		$files = array_filter(
+			$files,
+			function ( $file ) {
+				return $this->safe_rel( $file );
+			}
+		);
 		return array_values( array_unique( $files ) );
 	}
 
@@ -216,14 +251,27 @@ final class CDNHub_Uploader {
 		return $metadata;
 	}
 
-	/** True when this attachment (or one of its sizes) is not on the remote yet. */
+	/**
+	 * True when this attachment (or one of its sizes) is not on the remote yet, or
+	 * when a file was edited/replaced after it was uploaded. The stored blob SHA is
+	 * compared with the current content, because the file name alone cannot tell a
+	 * re-uploaded image from the original one.
+	 */
 	private function needs_sync( $id, $metadata ) {
 		if ( ! CDNHub_Store::is_synced( $id ) ) {
 			return true;
 		}
-		$map = CDNHub_Store::map( $id );
+		$map     = CDNHub_Store::map( $id );
+		$upload  = wp_get_upload_dir();
+		$basedir = trailingslashit( $upload['basedir'] );
 		foreach ( $this->collect_files( $id, $metadata ) as $rel ) {
-			if ( ! isset( $map[ wp_basename( $rel ) ] ) ) {
+			$name = wp_basename( $rel );
+			if ( ! isset( $map[ $name ] ) ) {
+				return true;
+			}
+			$abs = $basedir . $rel;
+			// A missing local file is normal when "delete local copy" is on: it cannot have changed.
+			if ( is_readable( $abs ) && $this->git_sha( $abs, (int) filesize( $abs ) ) !== $map[ $name ] ) {
 				return true;
 			}
 		}
@@ -262,7 +310,11 @@ final class CDNHub_Uploader {
 		}
 
 		$provider = $this->provider();
-		$ok       = true;
+		if ( ! $provider ) {
+			$this->logger->error( 'Could not delete the attachment files from remote storage: the storage provider is unavailable.', $id );
+			return;
+		}
+		$ok = true;
 		if ( $provider instanceof CDNHub_Batch_Provider ) {
 			$r = $provider->delete_many( $paths, sprintf( 'CDNHub: delete %s (%d file(s))', wp_basename( $paths[0] ), count( $paths ) ) );
 			if ( is_wp_error( $r ) ) {
@@ -284,20 +336,49 @@ final class CDNHub_Uploader {
 		}
 	}
 
-	/** Ask the CDN to drop cached copies of changed or deleted files (fire and forget). */
+	/**
+	 * Ask the CDN to drop cached copies of changed or deleted files. Requests are
+	 * blocking so failures can be reported: a stale CDN cache would otherwise hide
+	 * an upload for days with no explanation in the log. A total time budget keeps
+	 * a slow CDN from holding the request open for every single file size.
+	 */
 	private function purge( array $paths, $id ) {
 		$urls = $this->urls->purge_urls( $paths );
+		$ok   = 0;
+		$end  = microtime( true ) + 10;
 		foreach ( $urls as $url ) {
-			wp_remote_get(
+			$left = $end - microtime( true );
+			if ( $left < 0.5 ) {
+				$this->logger->error( 'Skipped the CDN purge request for ' . $url . ': the time budget was used up.', $id );
+				continue;
+			}
+			$r = wp_remote_get(
 				$url,
 				array(
-					'timeout'  => 5,
-					'blocking' => false,
+					'timeout'  => min( 5, $left ),
+					'blocking' => true,
 				)
 			);
+			if ( is_wp_error( $r ) ) {
+				$this->logger->error( 'Could not ask the CDN to refresh ' . $url . ': ' . $r->get_error_message(), $id );
+				continue;
+			}
+			$code = (int) wp_remote_retrieve_response_code( $r );
+			if ( $code < 200 || $code >= 400 ) {
+				$this->logger->error( sprintf( 'The CDN purge request for %s returned HTTP %d.', $url, $code ), $id );
+				continue;
+			}
+			$ok++;
 		}
 		if ( $urls ) {
-			$this->logger->info( sprintf( 'Asked the CDN to refresh %d file(s).', count( $urls ) ), $id );
+			$this->logger->info(
+				sprintf(
+					'Asked the CDN to refresh %d file(s)%s.',
+					count( $urls ),
+					$ok === count( $urls ) ? '' : sprintf( ' (%d request(s) failed)', count( $urls ) - $ok )
+				),
+				$id
+			);
 		}
 	}
 
@@ -356,11 +437,15 @@ final class CDNHub_Uploader {
 			$meta    = wp_get_attachment_metadata( $id );
 			$files   = $this->collect_files( $id, is_array( $meta ) ? $meta : array() );
 			if ( ! $files ) {
-				$files = array( (string) get_post_meta( $id, '_wp_attached_file', true ) );
+				$fallback = (string) get_post_meta( $id, '_wp_attached_file', true );
+				if ( $this->safe_rel( $fallback ) ) {
+					$files = array( $fallback );
+				}
 			}
 
-			$provider = null;
-			$failed   = array();
+			$provider    = null;
+			$no_provider = false;
+			$failed      = array();
 			foreach ( $files as $rel ) {
 				$abs = $basedir . $rel;
 				if ( file_exists( $abs ) ) {
@@ -370,8 +455,17 @@ final class CDNHub_Uploader {
 				if ( $map && ! isset( $map[ $name ] ) ) {
 					continue; // Was never uploaded: nothing to bring back.
 				}
+				if ( $no_provider ) {
+					$failed[] = $name . ' (the storage provider is unavailable)';
+					continue;
+				}
 				if ( null === $provider ) {
 					$provider = $this->provider();
+					if ( ! $provider ) {
+						$no_provider = true;
+						$failed[]    = $name . ' (the storage provider is unavailable)';
+						continue;
+					}
 				}
 				if ( ! method_exists( $provider, 'get' ) ) {
 					$failed[] = $name . ' (the storage provider cannot download)';
@@ -432,7 +526,9 @@ final class CDNHub_Uploader {
 
 	/**
 	 * Fetch (and cache for 15 minutes) the whole remote tree as two indexes:
-	 * 'paths' => path => blob SHA, and 'by_sha' => blob SHA => first path with it.
+	 * 'paths' => path => blob SHA, and 'by_sha' => blob SHA => paths with that content.
+	 * Keeping every path (not just the first) matters: the same logo can exist in
+	 * several folders, and only some of them are inside the media folder.
 	 *
 	 * @return array|WP_Error
 	 */
@@ -442,7 +538,7 @@ final class CDNHub_Uploader {
 			return $index;
 		}
 		$provider = $this->provider();
-		if ( ! method_exists( $provider, 'tree' ) ) {
+		if ( ! $provider || ! method_exists( $provider, 'tree' ) ) {
 			return new WP_Error( 'cdnhub_tree', 'The active storage provider cannot list remote files, so adopting is not available.' );
 		}
 		$tree = $provider->tree();
@@ -454,9 +550,7 @@ final class CDNHub_Uploader {
 		}
 		$by_sha = array();
 		foreach ( $tree['paths'] as $path => $sha ) {
-			if ( ! isset( $by_sha[ $sha ] ) ) {
-				$by_sha[ $sha ] = $path;
-			}
+			$by_sha[ $sha ][] = $path;
 		}
 		$index = array(
 			'paths'  => $tree['paths'],
@@ -525,6 +619,7 @@ final class CDNHub_Uploader {
 		$max     = (int) ( (float) $this->settings->get( 'max_size_mb' ) * MB_IN_BYTES );
 		$folder  = (string) $this->settings->get( 'folder' );
 		$prefix  = '' !== $folder ? $folder . '/' : '';
+		$provider = null;
 
 		// The main file decides: where its content lives remotely is where the attachment is adopted from.
 		$main = wp_basename( $files[0] );
@@ -538,11 +633,11 @@ final class CDNHub_Uploader {
 			$expected_path = $prefix . ( ( '.' === $expected_dir || '' === $expected_dir ) ? '' : $expected_dir . '/' ) . $main;
 			if ( isset( $paths[ $expected_path ] ) ) {
 				$provider = $this->provider();
-				if ( method_exists( $provider, 'get' ) ) {
+				if ( $provider && method_exists( $provider, 'get' ) ) {
 					$downloaded = $provider->get( $expected_path );
 					if ( ! is_wp_error( $downloaded ) && is_string( $downloaded ) && '' !== $downloaded ) {
 						wp_mkdir_p( dirname( $abs ) );
-						file_put_contents( $abs, $downloaded );
+						file_put_contents( $abs, $downloaded ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_file_put_contents
 					}
 				}
 			}
@@ -554,9 +649,18 @@ final class CDNHub_Uploader {
 		if ( $size > $max ) {
 			return $this->result( false, $main . ' is larger than your ' . $this->settings->get( 'max_size_mb' ) . ' MB limit.', array( 'found' => false ) );
 		}
-		$sha = $this->git_sha( $abs, $size );
-		$hit = isset( $by_sha[ $sha ] ) ? $by_sha[ $sha ] : null;
-		if ( null === $hit || 0 !== strpos( $hit, $prefix ) ) {
+		$sha  = $this->git_sha( $abs, $size );
+		$hits = isset( $by_sha[ $sha ] ) ? (array) $by_sha[ $sha ] : array();
+		$hit  = null;
+		foreach ( $hits as $candidate ) {
+			$candidate = (string) $candidate;
+			// Prefer a copy inside the media folder: other copies may belong to unrelated projects.
+			if ( 0 === strpos( $candidate, $prefix ) ) {
+				$hit = $candidate;
+				break;
+			}
+		}
+		if ( null === $hit ) {
 			return $this->result( false, 'Not on the remote storage yet (or outside the media folder).', array( 'found' => false ) );
 		}
 		$rest = '' === $prefix ? $hit : substr( $hit, strlen( $prefix ) );
@@ -574,14 +678,14 @@ final class CDNHub_Uploader {
 			}
 			$p2 = $prefix . ( '' !== $dir ? $dir . '/' : '' ) . $name;
 			if ( ! is_readable( $abs2 ) && isset( $paths[ $p2 ] ) ) {
-				if ( ! isset( $provider ) ) {
+				if ( null === $provider ) {
 					$provider = $this->provider();
 				}
-				if ( method_exists( $provider, 'get' ) ) {
+				if ( $provider && method_exists( $provider, 'get' ) ) {
 					$dl = $provider->get( $p2 );
 					if ( ! is_wp_error( $dl ) && is_string( $dl ) && '' !== $dl ) {
 						wp_mkdir_p( dirname( $abs2 ) );
-						file_put_contents( $abs2, $dl );
+						file_put_contents( $abs2, $dl ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_read_file_put_contents
 					}
 				}
 			}
@@ -768,7 +872,8 @@ final class CDNHub_Uploader {
 			$wpdb->prepare(
 				"SELECT COUNT(*) FROM {$wpdb->posts} p
 				INNER JOIN {$wpdb->postmeta} m ON (m.post_id = p.ID AND m.meta_key = '_cdnhub_offloaded')
-				WHERE p.post_type = 'attachment' AND p.ID > %d",
+				LEFT JOIN {$wpdb->postmeta} x ON (x.post_id = p.ID AND x.meta_key = '_cdnhub_exclude')
+				WHERE p.post_type = 'attachment' AND x.meta_id IS NULL AND p.ID > %d",
 				$out['last']
 			)
 		);
@@ -839,6 +944,9 @@ final class CDNHub_Uploader {
 		$max_bytes = (int) ( (float) $s->get( 'max_size_mb' ) * MB_IN_BYTES );
 		$conflict  = (string) $s->get( 'conflict' );
 		$provider  = $this->provider();
+		if ( ! $provider ) {
+			return $this->fail( $id, 'The storage provider is unavailable. Check the cdnhub_provider filter.', null, false, false );
+		}
 
 		// Already-synced attachments keep their remote folder so existing URLs never change.
 		// Re-included (previously excluded) ones keep theirs too — and their file map, so
@@ -1088,10 +1196,13 @@ final class CDNHub_Uploader {
 	public function counts() {
 		global $wpdb;
 		$pm = $wpdb->postmeta;
+		// Images kept on this server are reported separately; they must not also count
+		// as synced, queued or failed (their old status meta may still be present).
+		$ex = "SELECT post_id FROM {$pm} WHERE meta_key = '_cdnhub_exclude'";
 		return array(
-			'synced'  => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_offloaded'" ),
-			'failed'  => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_status' AND meta_value = 'failed'" ),
-			'pending' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_status' AND meta_value = 'pending'" ),
+			'synced'  => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_offloaded' AND post_id NOT IN ({$ex})" ),
+			'failed'  => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_status' AND meta_value = 'failed' AND post_id NOT IN ({$ex})" ),
+			'pending' => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_status' AND meta_value = 'pending' AND post_id NOT IN ({$ex})" ),
 			'local'   => (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$pm} WHERE meta_key = '_cdnhub_exclude'" ),
 		);
 	}

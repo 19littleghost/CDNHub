@@ -71,7 +71,7 @@ class SettingsTest extends CDNHub_Test_Case {
 		$this->assertSame( 1, $out['max_attempts'] );
 		$this->assertSame( 'jsdelivr', $out['url_mode'] );
 		$this->assertSame( array( 'jpg' ), $out['types'] );
-		$this->assertSame( 'me..you', $out['owner'] );
+		$this->assertSame( 'meyou', $out['owner'] );
 		$this->assertSame( '', $out['custom_template'] );
 	}
 }

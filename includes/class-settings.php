@@ -72,9 +72,9 @@ final class CDNHub_Settings {
 		if ( isset( $saved['keep_local'] ) && ! isset( $saved['delete_local'] ) ) {
 			$saved['delete_local'] = $saved['keep_local'] ? 0 : 1;
 		}
-		if ( isset( $saved['cdn_mode'] ) && ! isset( $saved['url_mode'] ) ) {
+		if ( isset( $saved['cdn_mode'] ) && is_string( $saved['cdn_mode'] ) && ! isset( $saved['url_mode'] ) ) {
 			$saved['url_mode'] = $saved['cdn_mode'];
-			if ( 'custom' === $saved['cdn_mode'] && ! empty( $saved['custom_url'] ) ) {
+			if ( 'custom' === $saved['cdn_mode'] && ! empty( $saved['custom_url'] ) && is_string( $saved['custom_url'] ) ) {
 				$saved['custom_template'] = rtrim( $saved['custom_url'], '/' ) . '/{path}';
 			}
 		}
@@ -84,7 +84,7 @@ final class CDNHub_Settings {
 		if ( defined( 'CDNHUB_GITHUB_TOKEN' ) && CDNHUB_GITHUB_TOKEN ) {
 			$o['token'] = (string) CDNHUB_GITHUB_TOKEN;
 		} else {
-			$o['token'] = $this->decrypt( (string) $o['token'] );
+			$o['token'] = $this->decrypt( is_string( $o['token'] ) ? $o['token'] : '' );
 		}
 		$o['types']       = is_array( $o['types'] ) ? array_values( $o['types'] ) : array();
 		$this->cache      = $o;
@@ -109,7 +109,7 @@ final class CDNHub_Settings {
 			return false;
 		}
 		$saved = get_option( self::OPT, array() );
-		$token = is_array( $saved ) && isset( $saved['token'] ) ? (string) $saved['token'] : '';
+		$token = is_array( $saved ) && isset( $saved['token'] ) && is_string( $saved['token'] ) ? $saved['token'] : '';
 		return 0 === strpos( $token, 'enc1:' ) && '' === $this->decrypt( $token );
 	}
 
@@ -135,44 +135,128 @@ final class CDNHub_Settings {
 			$out[ $k ] = empty( $in[ $k ] ) ? 0 : 1;
 		}
 
-		// Token: blank = keep the saved one. Stored encrypted.
-		$token = isset( $in['token'] ) ? preg_replace( '/\s+/', '', (string) $in['token'] ) : '';
+		// Token: blank = keep the saved one. Stored encrypted, never in plain text.
+		$token = preg_replace( '/\s+/', '', $this->text( $in, 'token' ) );
 		if ( '' !== $token ) {
-			$out['token'] = $this->encrypt( $token );
+			$encrypted = $this->encrypt( $token );
+			if ( false === $encrypted ) {
+				// Fail closed: never fall back to storing a token in plain text.
+				$out['token'] = $this->text( $raw, 'token' );
+				$this->add_error(
+					'cdnhub_token_encryption',
+					'The GitHub token was not saved: this server cannot encrypt it (OpenSSL with AES-256-GCM is unavailable). Enable the PHP OpenSSL extension, or define CDNHUB_GITHUB_TOKEN in wp-config.php.'
+				);
+			} else {
+				$out['token'] = $encrypted;
+			}
 		} else {
-			$out['token'] = isset( $raw['token'] ) ? (string) $raw['token'] : '';
+			$out['token'] = $this->text( $raw, 'token' );
 		}
 
-		$out['owner']  = preg_replace( '/[^A-Za-z0-9._-]/', '', isset( $in['owner'] ) ? (string) $in['owner'] : '' );
-		$out['repo']   = preg_replace( '/[^A-Za-z0-9._-]/', '', isset( $in['repo'] ) ? (string) $in['repo'] : '' );
-		$branch        = preg_replace( '/[^A-Za-z0-9._\/-]/', '', isset( $in['branch'] ) ? (string) $in['branch'] : '' );
-		$out['branch'] = '' !== $branch ? $branch : 'main';
+		$out['owner'] = $this->clean_owner( $this->text( $in, 'owner' ) );
+		$out['repo']  = $this->clean_repo( $this->text( $in, 'repo' ) );
 
-		$out['folder'] = $this->clean_path( isset( $in['folder'] ) ? (string) $in['folder'] : '' );
+		$branch = preg_replace( '/[^A-Za-z0-9._\/-]/', '', trim( $this->text( $in, 'branch' ) ) );
+		if ( '' === $branch ) {
+			$out['branch'] = 'main';
+		} elseif ( $this->valid_ref( $branch ) ) {
+			$out['branch'] = $branch;
+		} else {
+			$out['branch'] = '';
+			$this->add_error( 'cdnhub_branch', 'The branch name is not a valid Git branch. Use letters, numbers, dots, dashes and slashes only (no “..”, no leading or trailing slash).' );
+		}
+
+		$out['folder'] = $this->clean_path( $this->text( $in, 'folder' ) );
 
 		$out['structure'] = $this->choice( $in, 'structure', array( 'year_month', 'year', 'post_id', 'flat', 'custom' ), $def['structure'] );
-		$pattern          = preg_replace( '/[^A-Za-z0-9._\-\/{}]/', '', isset( $in['custom_pattern'] ) ? (string) $in['custom_pattern'] : '' );
+		$pattern          = preg_replace( '/[^A-Za-z0-9._\-\/{}]/', '', $this->text( $in, 'custom_pattern' ) );
 		$out['custom_pattern'] = '' !== $pattern ? $pattern : $def['custom_pattern'];
 
 		$out['url_mode'] = $this->choice( $in, 'url_mode', array( 'jsdelivr', 'raw', 'pages', 'custom' ), $def['url_mode'] );
-		$tpl             = trim( preg_replace( '/[\s"\'<>]/', '', isset( $in['custom_template'] ) ? (string) $in['custom_template'] : '' ) );
+		$tpl             = trim( preg_replace( '/[\s"\'<>]/', '', $this->text( $in, 'custom_template' ) ) );
 		$out['custom_template'] = preg_match( '#^https?://#i', $tpl ) ? $tpl : '';
 
 		$out['conflict']    = $this->choice( $in, 'conflict', array( 'unique', 'overwrite', 'fail' ), $def['conflict'] );
 		$out['upload_mode'] = $this->choice( $in, 'upload_mode', array( 'instant', 'background' ), $def['upload_mode'] );
 
-		$types        = isset( $in['types'] ) && is_array( $in['types'] ) ? $in['types'] : array();
+		$types        = isset( $in['types'] ) && is_array( $in['types'] ) ? array_filter( $in['types'], 'is_string' ) : array();
 		$out['types'] = array_values( array_intersect( array_keys( self::all_types() ), $types ) );
 
-		$out['max_size_mb']  = min( 90, max( 1, (float) ( isset( $in['max_size_mb'] ) ? $in['max_size_mb'] : $def['max_size_mb'] ) ) );
-		$out['max_attempts'] = min( 20, max( 1, (int) ( isset( $in['max_attempts'] ) ? $in['max_attempts'] : $def['max_attempts'] ) ) );
+		$max_size = isset( $in['max_size_mb'] ) && is_scalar( $in['max_size_mb'] ) ? (float) $in['max_size_mb'] : (float) $def['max_size_mb'];
+		$attempts = isset( $in['max_attempts'] ) && is_scalar( $in['max_attempts'] ) ? (int) $in['max_attempts'] : (int) $def['max_attempts'];
+		$out['max_size_mb']  = min( 90, max( 1, $max_size ) );
+		$out['max_attempts'] = min( 20, max( 1, $attempts ) );
 
 		return $out;
 	}
 
+	/** A submitted string, ignoring arrays and other non-scalar values. */
+	private function text( $in, $key ) {
+		return isset( $in[ $key ] ) && is_string( $in[ $key ] ) ? $in[ $key ] : '';
+	}
+
 	private function choice( $in, $key, $allowed, $default ) {
-		$v = isset( $in[ $key ] ) ? (string) $in[ $key ] : '';
+		$v = $this->text( $in, $key );
 		return in_array( $v, $allowed, true ) ? $v : $default;
+	}
+
+	/** GitHub user/organization names: letters, digits and single hyphens, up to 39 characters. */
+	private function clean_owner( $raw ) {
+		$raw = trim( (string) $raw );
+		if ( '' === $raw ) {
+			return '';
+		}
+		$value = preg_replace( '/[^A-Za-z0-9-]/', '', $raw );
+		$value = trim( preg_replace( '/-+/', '-', $value ), '-' );
+		if ( '' === $value || strlen( $value ) > 39 ) {
+			$this->add_error( 'cdnhub_owner', 'The GitHub username or organization is not valid. Use letters, numbers and single hyphens (e.g. “your-username”).' );
+			return '';
+		}
+		return $value;
+	}
+
+	/** GitHub repository names: letters, digits, dots, underscores and dashes, up to 100 characters. */
+	private function clean_repo( $raw ) {
+		$raw = trim( (string) $raw );
+		if ( '' === $raw ) {
+			return '';
+		}
+		$value = preg_replace( '/[^A-Za-z0-9._-]/', '', $raw );
+		if ( '' === $value || '.' === $value || '..' === $value || strlen( $value ) > 100 ) {
+			$this->add_error( 'cdnhub_repo', 'The repository name is not valid. Use letters, numbers, dots, underscores and dashes.' );
+			return '';
+		}
+		return $value;
+	}
+
+	/**
+	 * Git's rules for branch names (check-ref-format): no control characters, spaces,
+	 * "..", "~^:?*[", "@{", "//", backslashes, or path segments starting with a dot
+	 * or ending in ".lock". Rejecting these avoids URLs and API endpoints that break.
+	 */
+	private function valid_ref( $ref ) {
+		if ( '' === $ref || strlen( $ref ) > 255 || preg_match( '/[\x00-\x20\x7f~^:?*\[\\\\]/', $ref ) ) {
+			return false;
+		}
+		if ( false !== strpos( $ref, '..' ) || false !== strpos( $ref, '@{' ) || false !== strpos( $ref, '//' ) ) {
+			return false;
+		}
+		if ( '.' === $ref[0] || '/' === $ref[0] || '/' === substr( $ref, -1 ) || '.' === substr( $ref, -1 ) ) {
+			return false;
+		}
+		foreach ( explode( '/', $ref ) as $seg ) {
+			if ( '' === $seg || '.' === $seg[0] || '.lock' === strtolower( substr( $seg, -5 ) ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Show a settings error; the function is missing only outside the WordPress admin. */
+	private function add_error( $code, $message ) {
+		if ( function_exists( 'add_settings_error' ) ) {
+			add_settings_error( self::OPT, $code, $message, 'error' );
+		}
 	}
 
 	/** Safe relative path: letters, digits, . _ - and slashes; no traversal. */
@@ -197,19 +281,41 @@ final class CDNHub_Settings {
 		return function_exists( 'openssl_encrypt' ) && in_array( 'aes-256-gcm', openssl_get_cipher_methods(), true );
 	}
 
+	/** Whether tokens can be stored encrypted (the admin UI warns when they cannot). */
+	public function encryption_available() {
+		return $this->can_encrypt();
+	}
+
+	/**
+	 * Encrypt a token for storage.
+	 *
+	 * @return string|false 'enc1:...' on success, '' for an empty token, false when
+	 *                      encryption is unavailable or failed (never plain text).
+	 */
 	public function encrypt( $plain ) {
-		if ( '' === $plain || ! $this->can_encrypt() ) {
-			return $plain;
+		if ( '' === $plain ) {
+			return '';
 		}
-		$iv  = random_bytes( 12 );
+		if ( ! $this->can_encrypt() ) {
+			return false;
+		}
+		try {
+			$iv = random_bytes( 12 );
+		} catch ( \Throwable $e ) {
+			return false;
+		}
 		$tag = '';
 		$c   = openssl_encrypt( $plain, 'aes-256-gcm', $this->key(), OPENSSL_RAW_DATA, $iv, $tag );
-		return false === $c ? $plain : 'enc1:' . base64_encode( $iv . $tag . $c );
+		if ( false === $c || 16 !== strlen( $tag ) ) {
+			return false;
+		}
+		return 'enc1:' . base64_encode( $iv . $tag . $c );
 	}
 
 	public function decrypt( $stored ) {
+		$stored = (string) $stored;
 		if ( 0 !== strpos( $stored, 'enc1:' ) ) {
-			return $stored; // Plain text (older versions or no OpenSSL).
+			return $stored; // Plain text saved by an older version (before encryption).
 		}
 		if ( ! $this->can_encrypt() ) {
 			return '';
