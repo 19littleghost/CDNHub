@@ -1,0 +1,68 @@
+{
+	"name": "19littleghost/cdnhub",
+	"description": "WordPress plugin that offloads media to GitHub and serves it from a CDN (jsDelivr, GitHub raw, GitHub Pages or a custom domain).",
+	"type": "wordpress-plugin",
+	"license": "GPL-2.0-or-later",
+	"homepage": "https://github.com/19littleghost/CDNHub",
+	"authors": [
+		{
+			"name": "bdSpark",
+			"homepage": "https://github.com/19littleghost"
+		}
+	],
+	"require": {
+		"php": ">=7.4",
+		"ext-json": "*"
+	},
+	"require-dev": {
+		"brain/monkey": "^2.6",
+		"dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+		"phpcompatibility/phpcompatibility-wp": "^2.1",
+		"phpunit/phpunit": "^9.6",
+		"wp-coding-standards/wpcs": "^3.1"
+	},
+	"suggest": {
+		"ext-openssl": "Encrypts the GitHub token stored in the database (AES-256-GCM).",
+		"ext-dom": "Required to accept SVG uploads; without it every SVG is kept on the server."
+	},
+	"autoload": {
+		"classmap": [
+			"includes/"
+		]
+	},
+	"autoload-dev": {
+		"classmap": [
+			"tests/"
+		]
+	},
+	"config": {
+		"platform": {
+			"php": "7.4.33"
+		},
+		"allow-plugins": {
+			"dealerdirect/phpcodesniffer-composer-installer": true
+		},
+		"sort-packages": true
+	},
+	"scripts": {
+		"test": "phpunit",
+		"lint": "phpcs",
+		"lint:fix": "phpcbf",
+		"build": [
+			"@composer install --no-dev --optimize-autoloader",
+			"@composer archive --format=zip --file=cdnhub"
+		]
+	},
+	"archive": {
+		"exclude": [
+			"/tests",
+			"/phpunit.xml.dist",
+			"/phpcs.xml.dist",
+			"/composer.lock",
+			"/.gitattributes",
+			"/.gitignore",
+			"/.phpunit.result.cache",
+			"/*.zip"
+		]
+	}
+}

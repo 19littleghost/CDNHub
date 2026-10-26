@@ -9,9 +9,13 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class CDNHub_Uploader {
 
-	const CRON_HOOK  = 'cdnhub_sync_attachment';
-	const RL_KEY     = 'cdnhub_rate_limited_until';
-	const INDEX_KEY  = 'cdnhub_adopt_index';
+	const CRON_HOOK     = 'cdnhub_sync_attachment';
+	const RL_KEY        = 'cdnhub_rate_limited_until';
+	const INDEX_KEY     = 'cdnhub_adopt_index';
+	const OFFLOAD_NONCE = 'cdnhub_offload';
+
+	/** Error codes a retry cannot fix (only a settings change can). */
+	const PERMANENT_ERRORS = array( 'cdnhub_memory' );
 
 	private $settings;
 	private $logger;
@@ -148,19 +152,25 @@ final class CDNHub_Uploader {
 		return hash_final( $ctx );
 	}
 
-	private function svg_is_safe( $abs ) {
-		$c = file_get_contents( $abs, false, null, 0, 2 * MB_IN_BYTES );
-		if ( false === $c ) {
-			return false;
-		}
-		return ! (
-			preg_match( '~<\s*(script|iframe|object|embed|foreignObject|audio|video|link|meta)\b~i', $c )
-			|| preg_match( '~\son[a-z]+\s*=~i', $c )
-			|| preg_match( '~javascript\s*:|data\s*:\s*text/html|<!ENTITY~i', $c )
-		);
-	}
-
 	/* ------------------------------------------------------------------ hooks */
+
+	/**
+	 * The "Upload to GitHub" choice sent with this upload: true or false, or null when the
+	 * request carries none — or one without a valid nonce, which is then ignored.
+	 */
+	private function upload_choice() {
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- The nonce is verified right here.
+		if ( ! isset( $_REQUEST['cdnhub_offload'] ) ) {
+			return null;
+		}
+		$nonce = isset( $_REQUEST['cdnhub_offload_nonce'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['cdnhub_offload_nonce'] ) ) : '';
+		if ( ! current_user_can( 'upload_files' ) || ! wp_verify_nonce( $nonce, self::OFFLOAD_NONCE ) ) {
+			return null;
+		}
+		$val = sanitize_text_field( wp_unslash( $_REQUEST['cdnhub_offload'] ) );
+		// phpcs:enable
+		return in_array( $val, array( '1', 'true' ), true );
+	}
 
 	public function on_metadata( $metadata, $id ) {
 		$id = (int) $id;
@@ -168,10 +178,9 @@ final class CDNHub_Uploader {
 			return $metadata;
 		}
 
-		// Handle user upload preference if provided in request (e.g. from upload toggle).
-		if ( isset( $_REQUEST['cdnhub_offload'] ) ) {
-			$val     = $_REQUEST['cdnhub_offload'];
-			$offload = ( '1' === $val || 1 === $val || 'true' === $val || true === $val );
+		// Per-upload choice from the "Upload to GitHub" toggle.
+		$offload = $this->upload_choice();
+		if ( null !== $offload ) {
 			if ( ! $offload ) {
 				update_post_meta( $id, '_cdnhub_exclude', 1 );
 				$this->logger->info( 'Upload option unchecked: image kept local on server.', $id );
@@ -244,14 +253,79 @@ final class CDNHub_Uploader {
 				$names[] = wp_basename( $rel );
 			}
 		}
-		$provider = $this->provider();
+		$paths = array();
 		foreach ( array_unique( $names ) as $name ) {
-			$r = $provider->delete( $this->urls->remote_path( $dir, $name ) );
+			$paths[] = $this->urls->remote_path( $dir, $name );
+		}
+		if ( ! $paths ) {
+			return;
+		}
+
+		$provider = $this->provider();
+		$ok       = true;
+		if ( $provider instanceof CDNHub_Batch_Provider ) {
+			$r = $provider->delete_many( $paths, sprintf( 'CDNHub: delete %s (%d file(s))', wp_basename( $paths[0] ), count( $paths ) ) );
 			if ( is_wp_error( $r ) ) {
-				$this->logger->error( 'Could not delete ' . $name . ' from remote storage: ' . $r->get_error_message(), $id );
+				$ok = false;
+				$this->logger->error( 'Could not delete the files from remote storage: ' . $r->get_error_message(), $id );
+			}
+		} else {
+			foreach ( $paths as $path ) {
+				$r = $provider->delete( $path );
+				if ( is_wp_error( $r ) ) {
+					$ok = false;
+					$this->logger->error( 'Could not delete ' . wp_basename( $path ) . ' from remote storage: ' . $r->get_error_message(), $id );
+				}
 			}
 		}
-		$this->logger->info( 'Deleted attachment files from remote storage.', $id );
+		$this->purge( $paths, $id );
+		if ( $ok ) {
+			$this->logger->info( 'Deleted attachment files from remote storage.', $id );
+		}
+	}
+
+	/** Ask the CDN to drop cached copies of changed or deleted files (fire and forget). */
+	private function purge( array $paths, $id ) {
+		$urls = $this->urls->purge_urls( $paths );
+		foreach ( $urls as $url ) {
+			wp_remote_get(
+				$url,
+				array(
+					'timeout'  => 5,
+					'blocking' => false,
+				)
+			);
+		}
+		if ( $urls ) {
+			$this->logger->info( sprintf( 'Asked the CDN to refresh %d file(s).', count( $urls ) ), $id );
+		}
+	}
+
+	/* -------------------------------------------------------------- lifecycle */
+
+	/** Plugin activation: queue the uploads that were waiting when the plugin was switched off. */
+	public static function activate() {
+		global $wpdb;
+		$settings = new CDNHub_Settings();
+		$retry    = (bool) $settings->get( 'auto_retry' );
+		$max      = (int) $settings->get( 'max_attempts' );
+		$rows     = $wpdb->get_results( "SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_cdnhub_status' AND meta_value IN ('pending', 'failed')" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		$delay    = 10;
+		foreach ( (array) $rows as $row ) {
+			$id = (int) $row->post_id;
+			if ( 'failed' === $row->meta_value && ( ! $retry || (int) get_post_meta( $id, '_cdnhub_attempts', true ) >= $max ) ) {
+				continue;
+			}
+			if ( ! wp_next_scheduled( self::CRON_HOOK, array( $id ) ) ) {
+				wp_schedule_single_event( time() + $delay, self::CRON_HOOK, array( $id ) );
+				$delay += 5; // Spread out, to stay clear of GitHub's rate limits.
+			}
+		}
+	}
+
+	/** Plugin deactivation: no CDNHub cron events may fire while the plugin is off. */
+	public static function deactivate() {
+		wp_unschedule_hook( self::CRON_HOOK );
 	}
 
 	/* ------------------------------------------------------- keep it local */
@@ -640,15 +714,6 @@ final class CDNHub_Uploader {
 		if ( ! $ids ) {
 			return array( 'done' => true );
 		}
-		if ( ! $last ) {
-			// Full count once, for the progress bar on the first request.
-			$out['total'] = (int) $wpdb->get_var(
-				"SELECT COUNT(*) FROM {$wpdb->posts} p
-				INNER JOIN {$wpdb->postmeta} m ON (m.post_id = p.ID AND m.meta_key = '_cdnhub_offloaded')
-				LEFT JOIN {$wpdb->postmeta} x ON (x.post_id = p.ID AND x.meta_key = '_cdnhub_exclude')
-				WHERE p.post_type = 'attachment' AND x.meta_id IS NULL"
-			);
-		}
 		$upload  = wp_get_upload_dir();
 		$basedir = trailingslashit( $upload['basedir'] );
 		$out     = array(
@@ -659,6 +724,15 @@ final class CDNHub_Uploader {
 			'skipped'  => 0,
 			'failures' => 0,
 		);
+		if ( ! $last ) {
+			// Full count once, for the progress bar on the first request.
+			$out['total'] = (int) $wpdb->get_var(
+				"SELECT COUNT(*) FROM {$wpdb->posts} p
+				INNER JOIN {$wpdb->postmeta} m ON (m.post_id = p.ID AND m.meta_key = '_cdnhub_offloaded')
+				LEFT JOIN {$wpdb->postmeta} x ON (x.post_id = p.ID AND x.meta_key = '_cdnhub_exclude')
+				WHERE p.post_type = 'attachment' AND x.meta_id IS NULL"
+			);
+		}
 		foreach ( array_map( 'intval', $ids ) as $id ) {
 			$out['last'] = $id;
 			$map         = CDNHub_Store::map( $id );
@@ -772,16 +846,13 @@ final class CDNHub_Uploader {
 		$dir = metadata_exists( 'post', $id, '_cdnhub_dir' ) ? CDNHub_Store::dir( $id ) : $this->compute_dir( $id );
 		$map = CDNHub_Store::map( $id );
 
-		$new_map = array();
-		$sent    = 0;
-		$same    = 0;
-		$second  = false;
+		$second = false;
+		$main   = wp_basename( $files[0] );
 
 		while ( true ) {
-			$collision = false;
-			$new_map   = array();
-			$sent      = 0;
-			$same      = 0;
+			$new_map = array();
+			$pending = array(); // name => file to send.
+			$same    = 0;
 
 			foreach ( $files as $rel ) {
 				$name = wp_basename( $rel );
@@ -816,8 +887,8 @@ final class CDNHub_Uploader {
 				if ( $size > $max_bytes ) {
 					return $this->fail( $id, $name . ' is larger than your ' . $s->get( 'max_size_mb' ) . ' MB limit. The local file is used instead.' );
 				}
-				if ( 'svg' === $this->ext_of( $name ) && ! $this->svg_is_safe( $abs ) ) {
-					return $this->fail( $id, $name . ' was not uploaded: the SVG contains potentially unsafe code.' );
+				if ( 'svg' === $this->ext_of( $name ) && ! CDNHub_SVG::is_safe_file( $abs ) ) {
+					return $this->fail( $id, $name . ' was not uploaded: the SVG contains potentially unsafe code (or is larger than 5 MB).', null, false, false );
 				}
 
 				$sha = $this->git_sha( $abs, $size );
@@ -827,25 +898,23 @@ final class CDNHub_Uploader {
 					continue;
 				}
 
-				// Files this attachment already stored are ours to update; the conflict policy only protects foreign files.
-				$mine = isset( $map[ $name ] );
-				$r    = $provider->put( $abs, $this->urls->remote_path( $dir, $name ), $sha, $mine || 'overwrite' === $conflict );
-				if ( is_wp_error( $r ) ) {
-					if ( 'cdnhub_conflict' === $r->get_error_code() && 'unique' === $conflict && ! $second ) {
-						$collision = true;
-						break;
-					}
-					return $this->fail_from_error( $id, $r );
-				}
-				$new_map[ $name ] = $sha;
-				if ( 'unchanged' === $r['status'] ) {
-					$same++;
-				} else {
-					$sent++;
-				}
+				$pending[ $name ] = array(
+					'abs'       => $abs,
+					'sha'       => $sha,
+					// Files this attachment already stored are ours to update; the conflict policy only protects foreign files.
+					'overwrite' => isset( $map[ $name ] ) || 'overwrite' === $conflict,
+				);
 			}
 
-			if ( $collision ) {
+			// Remote paths are built last: restoring a missing file above may have changed $dir.
+			$batch = array();
+			foreach ( $pending as $name => $f ) {
+				$batch[ $this->urls->remote_path( $dir, $name ) ] = $f + array( 'name' => $name );
+			}
+			$message = 'CDNHub: add ' . $main . ( count( $batch ) > 1 ? ' (' . count( $batch ) . ' files)' : '' );
+			$stored  = $this->store( $provider, $batch, $message );
+
+			if ( is_wp_error( $stored ) && 'cdnhub_conflict' === $stored->get_error_code() && 'unique' === $conflict && ! $second ) {
 				// A different file already uses this name: move the whole attachment to a unique sub-folder.
 				$first  = $files[0];
 				$suffix = substr( $this->git_sha( $basedir . $first, (int) filesize( $basedir . $first ) ), 0, 8 );
@@ -854,7 +923,28 @@ final class CDNHub_Uploader {
 				$second = true;
 				continue;
 			}
+			if ( is_wp_error( $stored ) ) {
+				return $this->fail_from_error( $id, $stored );
+			}
 			break;
+		}
+
+		$sent    = 0;
+		$updated = array();
+		foreach ( $batch as $path => $f ) {
+			$new_map[ $f['name'] ] = $f['sha'];
+			$status                = isset( $stored[ $path ] ) ? $stored[ $path ] : 'created';
+			if ( 'unchanged' === $status ) {
+				$same++;
+			} else {
+				$sent++;
+			}
+			if ( 'updated' === $status ) {
+				$updated[] = $path;
+			}
+		}
+		if ( $updated ) {
+			$this->purge( $updated, $id );
 		}
 
 		update_post_meta( $id, '_cdnhub_dir', $dir );
@@ -868,8 +958,8 @@ final class CDNHub_Uploader {
 		delete_post_meta( $id, '_cdnhub_error' );
 		delete_post_meta( $id, '_cdnhub_attempts' );
 
-		$url = $this->urls->for_file( $dir, wp_basename( $files[0] ) );
-		$this->logger->info( sprintf( 'Synced %s (%d uploaded, %d already up to date) → %s', wp_basename( $files[0] ), $sent, $same, $url ), $id );
+		$url = $this->urls->for_file( $dir, $main );
+		$this->logger->info( sprintf( 'Synced %s (%d uploaded, %d already up to date) → %s', $main, $sent, $same, $url ), $id );
 
 		if ( $s->get( 'delete_local' ) ) {
 			foreach ( $files as $rel ) {
@@ -878,6 +968,29 @@ final class CDNHub_Uploader {
 		}
 
 		return $this->result( true, 'Synced.', array( 'url' => $url ) );
+	}
+
+	/**
+	 * Send files to the provider: as one change when it supports batches, otherwise file by file.
+	 *
+	 * @return array|WP_Error remote path => created|updated|unchanged
+	 */
+	private function store( $provider, array $batch, $message ) {
+		if ( ! $batch ) {
+			return array();
+		}
+		if ( $provider instanceof CDNHub_Batch_Provider ) {
+			return $provider->put_many( $batch, $message );
+		}
+		$out = array();
+		foreach ( $batch as $path => $f ) {
+			$r = $provider->put( $f['abs'], $path, $f['sha'], $f['overwrite'] );
+			if ( is_wp_error( $r ) ) {
+				return $r;
+			}
+			$out[ $path ] = $r['status'];
+		}
+		return $out;
 	}
 
 	/* --------------------------------------------------------------- failures */
@@ -891,18 +1004,21 @@ final class CDNHub_Uploader {
 			set_transient( self::RL_KEY, time() + $retry, $retry );
 			$rl = true;
 		}
-		return $this->fail( $id, $e->get_error_message(), $retry, $rl );
+		return $this->fail( $id, $e->get_error_message(), $retry, $rl, ! in_array( $e->get_error_code(), self::PERMANENT_ERRORS, true ) );
 	}
 
-	/** Record a failure, schedule an automatic retry and return a result array. Local files are never touched. */
-	private function fail( $id, $message, $retry_after = null, $rate_limited = false ) {
+	/**
+	 * Record a failure, schedule an automatic retry (unless $can_retry is false: retrying
+	 * would fail the same way) and return a result array. Local files are never touched.
+	 */
+	private function fail( $id, $message, $retry_after = null, $rate_limited = false, $can_retry = true ) {
 		update_post_meta( $id, '_cdnhub_status', 'failed' );
 		update_post_meta( $id, '_cdnhub_error', $message );
 		$attempts = (int) get_post_meta( $id, '_cdnhub_attempts', true ) + 1;
 		update_post_meta( $id, '_cdnhub_attempts', $attempts );
 		$this->logger->error( $message, $id );
 
-		if ( $this->settings->get( 'auto_retry' ) && $attempts < (int) $this->settings->get( 'max_attempts' ) ) {
+		if ( $can_retry && $this->settings->get( 'auto_retry' ) && $attempts < (int) $this->settings->get( 'max_attempts' ) ) {
 			$delay = $retry_after ? (int) $retry_after : (int) min( 21600, 300 * pow( 2, $attempts - 1 ) );
 			$this->schedule( $id, $delay );
 		}

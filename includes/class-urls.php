@@ -24,6 +24,25 @@ final class CDNHub_URLs {
 		return $this->url_for_path( $this->remote_path( $dir, $name ) );
 	}
 
+	/**
+	 * URLs to call so CDN caches drop the old copy of these remote paths. jsDelivr caches
+	 * branch URLs for up to a week, so an overwritten or deleted file would otherwise linger.
+	 * Filter `cdnhub_purge_urls` to purge other CDNs.
+	 *
+	 * @param string[] $paths Remote paths.
+	 * @return string[]
+	 */
+	public function purge_urls( array $paths ) {
+		$out = array();
+		foreach ( $paths as $path ) {
+			$url = $this->url_for_path( $path );
+			if ( 0 === strpos( $url, 'https://cdn.jsdelivr.net/gh/' ) ) {
+				$out[] = 'https://purge.jsdelivr.net/' . substr( $url, strlen( 'https://cdn.jsdelivr.net/' ) );
+			}
+		}
+		return array_values( array_unique( (array) apply_filters( 'cdnhub_purge_urls', $out, $paths ) ) );
+	}
+
 	public function url_for_path( $path ) {
 		$o   = $this->settings->all();
 		$enc = implode( '/', array_map( 'rawurlencode', explode( '/', $path ) ) );

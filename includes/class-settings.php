@@ -100,6 +100,19 @@ final class CDNHub_Settings {
 		return defined( 'CDNHUB_GITHUB_TOKEN' ) && CDNHUB_GITHUB_TOKEN;
 	}
 
+	/**
+	 * A token is saved but can no longer be decrypted: the key is derived from the
+	 * WordPress salts, so this happens when they change (or OpenSSL went away).
+	 */
+	public function token_unreadable() {
+		if ( $this->token_from_constant() ) {
+			return false;
+		}
+		$saved = get_option( self::OPT, array() );
+		$token = is_array( $saved ) && isset( $saved['token'] ) ? (string) $saved['token'] : '';
+		return 0 === strpos( $token, 'enc1:' ) && '' === $this->decrypt( $token );
+	}
+
 	public function is_ready() {
 		$o = $this->all();
 		return '' !== $o['token'] && '' !== $o['owner'] && '' !== $o['repo'] && '' !== $o['branch'];

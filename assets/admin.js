@@ -81,16 +81,23 @@ jQuery(function ($) {
 		syncUploaderParams(enabled);
 	}
 
+	// The server ignores the choice unless it comes with this nonce.
+	var OFFLOAD_NONCE = (typeof CDNHub !== 'undefined' && CDNHub.offload_nonce) ? CDNHub.offload_nonce : '';
+
+	function setOffloadParams(params, enabled) {
+		params.cdnhub_offload = enabled ? 1 : 0;
+		params.cdnhub_offload_nonce = OFFLOAD_NONCE;
+	}
+
 	function syncUploaderParams(enabled) {
-		var val = enabled ? 1 : 0;
 		if (typeof window.wpUploaderInit !== 'undefined' && window.wpUploaderInit.multipart_params) {
-			window.wpUploaderInit.multipart_params.cdnhub_offload = val;
+			setOffloadParams(window.wpUploaderInit.multipart_params, enabled);
 		}
 		if (typeof window._wpPluploadSettings !== 'undefined' && window._wpPluploadSettings.defaults && window._wpPluploadSettings.defaults.multipart_params) {
-			window._wpPluploadSettings.defaults.multipart_params.cdnhub_offload = val;
+			setOffloadParams(window._wpPluploadSettings.defaults.multipart_params, enabled);
 		}
 		if (window.wp && wp.Uploader && wp.Uploader.defaults && wp.Uploader.defaults.multipart_params) {
-			wp.Uploader.defaults.multipart_params.cdnhub_offload = val;
+			setOffloadParams(wp.Uploader.defaults.multipart_params, enabled);
 		}
 	}
 
@@ -103,7 +110,7 @@ jQuery(function ($) {
 		plupload.Uploader.prototype.init = function () {
 			this.bind('BeforeUpload', function (up) {
 				up.settings.multipart_params = up.settings.multipart_params || {};
-				up.settings.multipart_params.cdnhub_offload = isUploadOptionChecked() ? 1 : 0;
+				setOffloadParams(up.settings.multipart_params, isUploadOptionChecked());
 			});
 			return origPluploadInit.apply(this, arguments);
 		};
@@ -115,7 +122,7 @@ jQuery(function ($) {
 		wp.Uploader = function (options) {
 			options = options || {};
 			options.params = options.params || {};
-			options.params.cdnhub_offload = isUploadOptionChecked() ? 1 : 0;
+			setOffloadParams(options.params, isUploadOptionChecked());
 			return origWpUploader.apply(this, arguments);
 		};
 		$.extend(wp.Uploader, origWpUploader);
@@ -125,12 +132,15 @@ jQuery(function ($) {
 	if (window.wp && wp.apiFetch) {
 		wp.apiFetch.use(function (options, next) {
 			if (options && options.path && options.path.indexOf('/wp/v2/media') !== -1 && options.method === 'POST') {
-				var enabledVal = isUploadOptionChecked() ? 1 : 0;
+				var params = {};
+				setOffloadParams(params, isUploadOptionChecked());
 				if (options.data instanceof FormData) {
-					options.data.append('cdnhub_offload', enabledVal);
+					options.data.append('cdnhub_offload', params.cdnhub_offload);
+					options.data.append('cdnhub_offload_nonce', params.cdnhub_offload_nonce);
 				} else if (typeof options.path === 'string') {
 					var sep = options.path.indexOf('?') !== -1 ? '&' : '?';
-					options.path += sep + 'cdnhub_offload=' + enabledVal;
+					options.path += sep + 'cdnhub_offload=' + params.cdnhub_offload +
+						'&cdnhub_offload_nonce=' + encodeURIComponent(params.cdnhub_offload_nonce);
 				}
 			}
 			return next(options);

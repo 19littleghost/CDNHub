@@ -30,6 +30,7 @@ Upload images the normal way in your WordPress admin or block editor — **CDNHu
   - [Exclude Specific Images from CDN](#exclude-specific-images-from-cdn)
 - [Security & Privacy](#-security--privacy)
 - [Developer Hooks & Custom Providers](#-developer-hooks--custom-providers)
+- [Development](#-development)
 - [System Requirements](#-system-requirements)
 - [License](#-license)
 
@@ -57,8 +58,8 @@ Upload images the normal way in your WordPress admin or block editor — **CDNHu
 | **"Adopt" Existing Media Tool** | Already pushed your `wp-content/uploads` folder to GitHub? CDNHub matches media by content hash and adopts them instantly without re-uploading. |
 | **Selective "Exclude from CDN"** | Easily mark sensitive files, private documents, or site logos to stay strictly on your local web server. |
 | **Media Library Integration** | Displays CDN sync badges (`On CDN`, `Queued`, `Failed`, `Excluded`), per-image sync triggers, and bulk actions in WordPress Media Library. |
-| **Bank-Grade Token Security** | GitHub access tokens are encrypted at rest with AES-256-CBC and scrubbed from activity logs. Supports `wp-config.php` constants. |
-| **Developer Extensible** | Modular `CDNHub_Provider` interface and `cdnhub_provider` filter allow custom storage adapters (e.g. GitLab, S3, R2). |
+| **Encrypted Token** | GitHub access tokens are encrypted at rest with AES-256-GCM and scrubbed from activity logs. Supports `wp-config.php` constants. |
+| **Developer Extensible** | Modular `CDNHub_Provider` / `CDNHub_Batch_Provider` interfaces and the `cdnhub_provider` filter allow custom storage adapters (e.g. GitLab, S3, R2). |
 
 ---
 
@@ -77,7 +78,7 @@ Upload images the normal way in your WordPress admin or block editor — **CDNHu
      └───────────────────────┘
                  │ Yes
                  ▼
-    [ Upload to GitHub via REST API ] ────── Failure ──► [ Fallback to local copy ]
+[ Commit all sizes to GitHub as ONE commit ] ─ Failure ─► [ Fallback to local copy ]
                  │                                        [ Queued for WP-Cron retry ]
                  │ Success
                  ▼
@@ -90,6 +91,9 @@ Upload images the normal way in your WordPress admin or block editor — **CDNHu
 [ CDNHub Rewriter swaps local URL with CDN URL ]
   e.g. https://cdn.jsdelivr.net/gh/owner/repo@branch/media/2026/10/photo.jpg
 ```
+
+- **One commit per image.** The original and every thumbnail size are committed together through GitHub's Git Data API, so your repository history stays readable. Parallel uploads are handled: if the branch moves while committing, CDNHub rebuilds the commit on the new head.
+- **Fresh CDN copies.** jsDelivr caches branch URLs for up to a week. When CDNHub overwrites or deletes a file, it asks jsDelivr to purge that URL so visitors don't get the old version.
 
 ---
 
@@ -148,13 +152,13 @@ Select how media files are organized in the GitHub repository:
 ### Upload Rules & Conflict Strategies
 
 Under **Tools > CDNHub > Upload rules**:
-- **Supported Formats**: Select allowed formats: `JPG`, `PNG`, `GIF`, `WebP`, `AVIF`, and `SVG` (all SVG uploads are sanitized against malicious code).
-- **Max File Size**: Cap the maximum file size (in MB) eligible for CDN upload.
+- **Supported Formats**: Select allowed formats: `JPG`, `PNG`, `GIF`, `WebP`, `AVIF`, and `SVG` (every SVG is checked for unsafe code first; see [Security & Privacy](#-security--privacy)).
+- **Max File Size**: Cap the maximum file size (in MB) eligible for CDN upload. GitHub's API only accepts base64-encoded content, so an upload needs about 4.5× the file size in PHP memory; CDNHub checks this first and keeps files that would not fit on your server. jsDelivr does not serve files larger than 20 MB.
 - **Upload Mode**:
   - `Instant`: Uploads in real-time when saving media.
   - `Background`: Queues files for background transfer via WP-Cron (faster editor experience).
 - **Conflict Strategy**:
-  - `Unique (Default)`: Appends an incremented suffix (`-1`, `-2`) if a file with the same name exists.
+  - `Unique (Default)`: If a different file with the same name exists, the image (with all its sizes) goes into a sub-folder named after its content hash, e.g. `media/2026/10/1a2b3c4d/photo.jpg`.
   - `Overwrite`: Commits the new file over the existing remote file.
   - `Fail`: Cancels remote sync safely and retains the file locally.
 - **Local Storage Management**: Choose whether to keep local copies as a safety backup (recommended) or remove them to preserve web host storage.
@@ -183,13 +187,14 @@ Need your site logo, invoices, or private downloads to be hosted strictly on you
 
 ## 🔐 Security & Privacy
 
-- **Encrypted Credentials**: Tokens entered via the admin UI are encrypted at rest using AES-256-CBC with your WordPress installation's secure keys and salts.
+- **Encrypted Credentials**: Tokens entered via the admin UI are encrypted at rest using AES-256-GCM, with a key derived from your WordPress `AUTH` salt. **If you change the salts in `wp-config.php`, the saved token can no longer be decrypted** — CDNHub pauses uploads and shows a notice asking you to enter the token again. Defining the token as a constant (below) avoids this.
 - **Log Scrubbing**: All API tokens and credentials are automatically redacted and masked in activity logs.
 - **wp-config.php Support**: For maximum security, define your token in `wp-config.php` so it is never saved to the database:
   ```php
   define( 'CDNHUB_GITHUB_TOKEN', 'github_pat_11A...your_token_here...' );
   ```
-- **SVG Protection**: Any uploaded SVG files undergo security validation to strip embedded scripts, external entities, and potential XSS vectors.
+- **SVG Protection**: SVGs are parsed as XML and **rejected** (kept on your server, never modified) when they contain scripts, event handlers (`onload=` …), `<foreignObject>`/`<iframe>`/embedded documents, `javascript:` or HTML/SVG `data:` URLs (also when entity-encoded), CSS `@import`, a DOCTYPE/entities, or links other than `#fragments`, `http(s)` and inlined raster images. SVGs over 5 MB are not checked and stay local. Requires the PHP `dom` extension; without it, no SVG is uploaded.
+- **Upload Toggle Protection**: The per-upload "Upload to GitHub" choice is only honoured when it comes with a valid WordPress nonce from a user who can upload files.
 
 ---
 
@@ -205,13 +210,44 @@ add_filter( 'cdnhub_provider', function( $provider, $settings ) {
 }, 10, 2 );
 ```
 
+Implement `CDNHub_Batch_Provider` (adds `put_many()` and `delete_many()`) when your storage can save several files as one change; CDNHub then sends every size of an image in a single call. Plain `CDNHub_Provider` implementations keep working file by file.
+
+### CDN Cache Purging
+After a file is overwritten or deleted, CDNHub requests the purge URLs from `cdnhub_purge_urls` (jsDelivr is built in). Add your own CDN's purge endpoints:
+
+```php
+add_filter( 'cdnhub_purge_urls', function( $urls, $remote_paths ) {
+    foreach ( $remote_paths as $path ) {
+        $urls[] = 'https://cdn.example.com/purge/' . $path;
+    }
+    return $urls;
+}, 10, 2 );
+```
+
+---
+
+## 🧑‍💻 Development
+
+The plugin uses [Composer](https://getcomposer.org) for autoloading and its development tools (PHPUnit with Brain Monkey, and PHP_CodeSniffer with the WordPress Coding Standards).
+
+```bash
+composer install     # dependencies + autoloader
+composer test        # unit tests
+composer lint        # coding standards (phpcs)
+composer lint:fix    # fix what can be fixed automatically (phpcbf)
+composer build       # cdnhub.zip with a production autoloader (removes dev dependencies)
+```
+
+`cdnhub.php` uses `vendor/autoload.php` when it exists and otherwise loads the classes directly, so the plugin also runs from a plain Git checkout without Composer.
+
 ---
 
 ## 📋 System Requirements
 
 - **WordPress**: 5.8 or higher (tested up to 6.8)
 - **PHP**: 7.4 or higher (supports PHP 8.0, 8.1, 8.2, 8.3+)
-- **PHP Extensions**: `curl`, `json`, `openssl`
+- **PHP Extensions**: `curl`, `json`, `openssl` (token encryption), `dom` (SVG checks)
+- **PHP Memory**: about 4.5× your largest upload, plus WordPress itself
 - **GitHub Account & Repository**: Public repository for jsDelivr CDN delivery
 
 ---

@@ -21,3 +21,7 @@ temp/
 # Environment files
 .env
 .env.local
+
+# Composer
+/vendor/
+.phpunit.result.cache

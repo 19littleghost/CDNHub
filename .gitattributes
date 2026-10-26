@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+# Not part of the release zip (git archive / GitHub source downloads).
+/tests              export-ignore
+/phpunit.xml.dist   export-ignore
+/phpcs.xml.dist     export-ignore
+/composer.lock      export-ignore
+/.gitattributes     export-ignore
+/.gitignore         export-ignore

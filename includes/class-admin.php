@@ -96,6 +96,7 @@ final class CDNHub_Admin {
 			array(
 				'ajax'          => admin_url( 'admin-ajax.php' ),
 				'nonce'         => wp_create_nonce( 'cdnhub' ),
+				'offload_nonce' => wp_create_nonce( CDNHub_Uploader::OFFLOAD_NONCE ),
 				'upload_to_cdn' => (int) $this->settings->get( 'upload_to_cdn' ),
 				'is_active'     => $this->settings->is_active() ? 1 : 0,
 			)
@@ -127,6 +128,13 @@ final class CDNHub_Admin {
 
 		$screen = get_current_screen();
 		if ( ! $screen || ! in_array( $screen->base, array( 'upload', 'post', 'tools_page_cdnhub' ), true ) || ! $this->settings->get( 'enabled' ) ) {
+			return;
+		}
+		if ( current_user_can( 'manage_options' ) && $this->settings->token_unreadable() ) {
+			printf(
+				'<div class="notice notice-error"><p><strong>CDNHub</strong> can no longer read the saved GitHub token, so uploads are paused. This happens when the security keys (salts) in <code>wp-config.php</code> change. <a href="%s">Enter the token again</a>, or define <code>CDNHUB_GITHUB_TOKEN</code> in <code>wp-config.php</code>.</p></div>',
+				esc_url( admin_url( 'tools.php?page=cdnhub' ) )
+			);
 			return;
 		}
 		if ( ! $this->settings->is_ready() ) {
@@ -320,6 +328,7 @@ final class CDNHub_Admin {
 			return;
 		}
 		$default_on = (bool) $this->settings->get( 'upload_to_cdn' );
+		wp_nonce_field( CDNHub_Uploader::OFFLOAD_NONCE, 'cdnhub_offload_nonce', false );
 		?>
 		<div class="cdnhub-upload-option-wrap hide-if-no-js">
 			<label class="cdnhub-upload-option-label" for="cdnhub-upload-toggle">
@@ -740,7 +749,7 @@ final class CDNHub_Admin {
 							</td></tr>
 						<tr><th scope="row"><label for="cdnhub-max">Maximum file size</label></th>
 							<td><input type="number" id="cdnhub-max" min="1" max="90" step="1" class="small-text" name="<?php echo $this->field_name( 'max_size_mb' ); // phpcs:ignore ?>" value="<?php echo esc_attr( $s->get( 'max_size_mb' ) ); ?>"> MB
-								<p class="description">Larger images stay on your server.</p></td></tr>
+								<p class="description">Larger images stay on your server. Uploading needs about 4.5× the file size in PHP memory, and jsDelivr does not serve files over 20 MB.</p></td></tr>
 						<tr><th scope="row">If GitHub is unavailable</th>
 							<td>
 								<p class="description" style="margin-top:0">The editor is never blocked: the image simply stays local and works normally.</p>

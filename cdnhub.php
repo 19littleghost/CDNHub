@@ -19,15 +19,22 @@ define( 'CDNHUB_FILE', __FILE__ );
 define( 'CDNHUB_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CDNHUB_URL', plugin_dir_url( __FILE__ ) );
 
-require_once CDNHUB_DIR . 'includes/interface-provider.php';
-require_once CDNHUB_DIR . 'includes/class-settings.php';
-require_once CDNHUB_DIR . 'includes/class-logger.php';
-require_once CDNHUB_DIR . 'includes/class-store.php';
-require_once CDNHUB_DIR . 'includes/class-github-provider.php';
-require_once CDNHUB_DIR . 'includes/class-urls.php';
-require_once CDNHUB_DIR . 'includes/class-uploader.php';
-require_once CDNHUB_DIR . 'includes/class-rewriter.php';
-require_once CDNHUB_DIR . 'includes/class-admin.php';
+if ( is_readable( CDNHUB_DIR . 'vendor/autoload.php' ) ) {
+	require_once CDNHUB_DIR . 'vendor/autoload.php';
+} else {
+	// Installed without running Composer: load the classes directly.
+	require_once CDNHUB_DIR . 'includes/interface-provider.php';
+	require_once CDNHUB_DIR . 'includes/interface-batch-provider.php';
+	require_once CDNHUB_DIR . 'includes/class-settings.php';
+	require_once CDNHUB_DIR . 'includes/class-logger.php';
+	require_once CDNHUB_DIR . 'includes/class-store.php';
+	require_once CDNHUB_DIR . 'includes/class-svg.php';
+	require_once CDNHUB_DIR . 'includes/class-github-provider.php';
+	require_once CDNHUB_DIR . 'includes/class-urls.php';
+	require_once CDNHUB_DIR . 'includes/class-uploader.php';
+	require_once CDNHUB_DIR . 'includes/class-rewriter.php';
+	require_once CDNHUB_DIR . 'includes/class-admin.php';
+}
 
 /**
  * Plugin container. Everything is wired here so each piece stays small and replaceable.
@@ -64,3 +71,5 @@ final class CDNHub {
 }
 
 add_action( 'plugins_loaded', array( 'CDNHub', 'instance' ) );
+register_activation_hook( __FILE__, array( 'CDNHub_Uploader', 'activate' ) );
+register_deactivation_hook( __FILE__, array( 'CDNHub_Uploader', 'deactivate' ) );

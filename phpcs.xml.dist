@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<ruleset name="CDNHub">
+	<description>Coding standard for CDNHub.</description>
+
+	<file>cdnhub.php</file>
+	<file>uninstall.php</file>
+	<file>includes</file>
+
+	<arg name="extensions" value="php"/>
+	<arg name="colors"/>
+	<arg value="sp"/>
+
+	<config name="testVersion" value="7.4-"/>
+	<config name="minimum_wp_version" value="5.8"/>
+
+	<rule ref="PHPCompatibilityWP"/>
+
+	<rule ref="WordPress">
+		<!-- Class files are named after what they do (class-github-provider.php), not the class name. -->
+		<exclude name="WordPress.Files.FileName"/>
+		<!-- Short methods are self-describing; doc blocks are written where they add something. -->
+		<exclude name="Squiz.Commenting"/>
+		<exclude name="Generic.Commenting.DocComment.MissingShort"/>
+		<!-- User-facing strings are not translated yet. -->
+		<exclude name="WordPress.WP.I18n"/>
+	</rule>
+
+	<rule ref="WordPress.NamingConventions.PrefixAllGlobals">
+		<properties>
+			<property name="prefixes" type="array">
+				<element value="cdnhub"/>
+			</property>
+		</properties>
+	</rule>
+</ruleset>

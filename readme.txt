@@ -26,7 +26,10 @@ Free up web host storage, decrease server inode usage, reduce hosting bandwidth 
 * **Exclude from CDN**: Keep any image (e.g., logo, private files) on your origin server only.
 * **Fail-Safe & Auto-Retry**: Keeps local copies by default; failed uploads fall back to local files and retry automatically.
 * **Media Library Integration**: Custom status column, one-click sync/re-sync buttons, and bulk upload actions.
-* **Bank-Grade Security**: GitHub access tokens are encrypted at rest with AES-256-CBC and scrubbed from logs. Also supports `CDNHUB_GITHUB_TOKEN` in `wp-config.php`.
+* **One Commit per Image**: The original and all its sizes are committed together, keeping the repository history clean.
+* **Fresh CDN Copies**: Overwritten or deleted files are purged from the jsDelivr cache automatically.
+* **Encrypted Token**: GitHub access tokens are encrypted at rest with AES-256-GCM and scrubbed from logs. Also supports `CDNHUB_GITHUB_TOKEN` in `wp-config.php`.
+* **SVG Checks**: SVG files containing scripts, event handlers or other unsafe code are rejected and stay on your server.
 * **Developer Extensible**: Pluggable provider interface (`CDNHub_Provider`) and `cdnhub_provider` filter.
 
 = Open Source & Author Attribution =
@@ -60,14 +63,29 @@ Yes! You can mark any media item as "Excluded from CDN" in the Media Library. It
 Yes! Add the following line to `wp-config.php`:
 `define( 'CDNHUB_GITHUB_TOKEN', 'github_pat_your_token_here' );`
 
+= CDNHub says it can no longer read my token. Why? =
+The saved token is encrypted with a key derived from your WordPress security salts. If the salts in `wp-config.php` change, enter the token again in Tools > CDNHub (or define `CDNHUB_GITHUB_TOKEN`).
+
 == Changelog ==
+
+= Unreleased =
+* Each image (all sizes) is now uploaded as a single commit via the Git Data API; deletions are batched too.
+* jsDelivr cache is purged when a file is overwritten or deleted (`cdnhub_purge_urls` filter for other CDNs).
+* Uploads that would exceed the PHP memory limit are refused up front instead of crashing, and are not retried.
+* SVG checks now parse the whole file as XML and catch entity-encoded and hidden payloads.
+* The per-upload "Upload to GitHub" choice now requires a valid nonce.
+* An admin notice explains when the saved token cannot be decrypted (changed salts).
+* Deactivation clears scheduled uploads; activation re-queues pending ones; uninstall removes all plugin options and transients.
+* Fixed: the local-copy cleanup tool lost its total count on the first batch.
+* Composer support: autoloading, PHPUnit tests, and WordPress coding standards.
+* Corrected the documented encryption algorithm (AES-256-GCM).
 
 = 26.2.1 =
 * Initial public release with full GitHub integration.
 * Added jsDelivr, GitHub Raw, GitHub Pages, and Custom CDN URL modes.
 * Added "Adopt" tool for existing repository media.
 * Added per-image Exclude from CDN functionality.
-* Added automated WP-Cron retries and AES-256-CBC token encryption.
+* Added automated WP-Cron retries and AES-256-GCM token encryption.
 
 == Upgrade Notice ==
 
